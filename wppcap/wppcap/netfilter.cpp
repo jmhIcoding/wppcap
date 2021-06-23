@@ -1,17 +1,38 @@
 #include "netfilter.h"
-
-
+#include <Psapi.h>
+#include <Windows.h>
+#include <stdio.h>
+#include <Shlwapi.h>
 DWORD sniff_routine(void * handle)
 {
-	unsigned char buffer[maxbuf] = { 0 };
-	unsigned int packet_len;
+	unsigned char path[maxbuf] = { 0 };
+	char * filename;
+	unsigned int path_len=0;
 	WINDIVERT_ADDRESS pkt_addr;
 	handle = (HANDLE)handle;
+	HANDLE process;
 	while (true)
 	{
-		fprintf(stdout, "wait for ...\n");
-		WinDivertRecv(handle, buffer, maxbuf, &packet_len, &pkt_addr);//接收数据
-		fprintf(stdout, "recv data...%d bytes, src port:%d, dst port:%d, pid: %d.\n", packet_len, pkt_addr.Flow.LocalPort, pkt_addr.Flow.RemotePort, pkt_addr.Flow.ProcessId);
+		WinDivertRecv(handle, NULL, 0, NULL, &pkt_addr);//接收数据
+
+		process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE,
+			pkt_addr.Flow.ProcessId);
+		path_len = 0;
+		if (process != NULL)
+		{
+			path_len = GetProcessImageFileName(process, (LPSTR)path, sizeof(path));
+			CloseHandle(process);
+			filename = PathFindFileName((LPSTR)path);
+		}
+		switch (pkt_addr.Event)
+		{
+		case WINDIVERT_EVENT_FLOW_ESTABLISHED:
+			printf("[OPEN] Flow src port:%d, dst port:%d, pid: %d, path:%s.\n", pkt_addr.Flow.LocalPort, pkt_addr.Flow.RemotePort, pkt_addr.Flow.ProcessId, filename);
+			break;
+		case WINDIVERT_EVENT_FLOW_DELETED:
+			printf("[CLOSE] Flow src port:%d, dst port:%d, pid: %d, path:%s.\n", pkt_addr.Flow.LocalPort, pkt_addr.Flow.RemotePort, pkt_addr.Flow.ProcessId, filename);
+			break;
+		}
 		fflush(stdout);
 	}
 }
@@ -49,7 +70,7 @@ filter_type_modify	修改包,然后重新发送
 */
 netfilter::netfilter(char * filter, char filter_type)
 {
-	this->winDivertHandle = WinDivertOpen(filter, WINDIVERT_LAYER_FLOW, -1000, filter_type);
+	this->winDivertHandle = WinDivertOpen(filter, WINDIVERT_LAYER_FLOW, 776, filter_type);
 	LPTHREAD_START_ROUTINE routine = (LPTHREAD_START_ROUTINE)NULL;
 	if (winDivertHandle == INVALID_HANDLE_VALUE)
 	{
@@ -65,13 +86,12 @@ netfilter::netfilter(char * filter, char filter_type)
 		WinDivertSetParam(this->winDivertHandle, WINDIVERT_PARAM_QUEUE_LENGTH, SNIFF_QUEUE_LEN);
 		WinDivertSetParam(this->winDivertHandle, WINDIVERT_PARAM_QUEUE_TIME, SNIFF_QUEUE_TIME);
 		WinDivertSetParam(this->winDivertHandle, WINDIVERT_PARAM_QUEUE_SIZE, SNIFF_QUEUE_SIZE);
-		//routine = (LPTHREAD_START_ROUTINE)sniff_routine;
+		routine = (LPTHREAD_START_ROUTINE)sniff_routine;
 		break;
 	default:
 		WinDivertSetParam(this->winDivertHandle, WINDIVERT_PARAM_QUEUE_LENGTH, MODIFY_QUEUE_LEN);
 		WinDivertSetParam(this->winDivertHandle, WINDIVERT_PARAM_QUEUE_TIME, MODIFY_QUEUE_TIME);
 		WinDivertSetParam(this->winDivertHandle, WINDIVERT_PARAM_QUEUE_SIZE, MODIFY_QUEUE_SIZE);
-		routine = (LPTHREAD_START_ROUTINE)modify_routine;
 		break;
 	}
 	fprintf(stdout, "filter open well.\n");
